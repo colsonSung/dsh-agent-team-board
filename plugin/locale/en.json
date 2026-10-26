@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent Team Board",
+    "description": "Show how the agent team is cooperating: one column per teammate, with the shared task board as cards."
+  }
+}

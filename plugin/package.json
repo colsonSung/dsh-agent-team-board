@@ -1,0 +1,68 @@
+{
+  "name": "dsh-agent-team-board",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A Team Board tab for the DeepSeek Harness: watch an Agent Team cooperate — one column per teammate, with their shared tasks, token cost and artifacts.",
+  "license": "MIT",
+  "author": "Ethan Song",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/colsonSung/dsh-agent-team-board.git"
+  },
+  "homepage": "https://github.com/colsonSung/dsh-agent-team-board#readme",
+  "bugs": {
+    "url": "https://github.com/colsonSung/dsh-agent-team-board/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "agent-team",
+    "subagent",
+    "dashboard",
+    "observability"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "build.mjs",
+    "src",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests/*.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.1.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
