@@ -1,14 +1,11 @@
-# Agent Team Board — technical reference
-
-> This file documents the bundle in `plugin/`. For the feature tour and the
-> install steps, see the [repository README](../README.md).
+# Agent Team Board
 
 A **Team Board** tab for the DeepSeek Harness, placed directly to the right of
 **Trajectory** in the conversation header. It shows how an Agent Team is
 cooperating right now: one column per teammate, with that teammate's shared
 tasks as cards.
 
-![board](../docs/board.png)
+![board](docs/board.png)
 
 ## What it shows
 
@@ -22,6 +19,8 @@ tasks as cards.
 | Status group | One group per status: the shared tasks the member owns as cards, and the steps it recorded as rows |
 | Task card | A shared task: subject, status, readiness, owner, dependencies, touched files, and write-scope conflicts |
 | Unassigned column | Tasks nobody has claimed yet |
+| Status icon | Every state is **drawn, not typed**: an empty ring for work not started, a ring with a solid core for work in progress, a soft disc with a check for work that is done. The same icon rides in a shared task's status pill |
+| Halo | A column that carries work in progress wears an animated halo, so the board says where the work is without being read |
 
 The second layout groups **the same work** by status (pending / in progress /
 done): the shared tasks as full cards, and every member's task items as rows
@@ -30,7 +29,7 @@ that the other layout shows — a team with thirty finished steps and one
 shared task shows "Done 30" and "Pending 1" in the status view, not an empty
 board.
 
-![status layout](../docs/board-status.png)
+![status layout](docs/board-status.png)
 
 **A column is the agent's work, not the shared board.** Each member column
 carries the member's work split by status — pending, in progress, done — with
@@ -54,6 +53,53 @@ only place a member's responsibility and results appear, and the status
 layout renders no member column — so without the strip the panel would be
 unreachable in half the board.
 
+## The complete task record
+
+A member's `todos` projection carries **the round that is running**. A new
+round starts with an empty list, so the work of the earlier rounds disappears
+from it — a Lead that finished three rounds ago shows an empty column even
+though it recorded seventeen items along the way.
+
+The board therefore asks the Host for the whole record. The Host reads the
+Session log, keeps only the `todo/write` events, and merges them: an item
+counts once, and the last write that mentioned it decides its status. The
+browser receives a few kilobytes instead of the log, and the column shows the
+whole record — with the running round's own list merged in, so an item both
+rounds mention is counted once and the running round wins its status.
+
+| Where | What |
+| --- | --- |
+| `GET /api/agent-team-board/history?sessionId=…` | The Host half's route: one Session's complete task record |
+| Column counts | Pending / in progress / done over the **complete** record, not the running round's slice |
+| Column note | "N from earlier rounds" under the counts, so the two sources stay distinguishable |
+| List | The newest eight entries of a group stay on screen; the rest fold behind "Show N more" |
+| Member panel | The same complete record, with the same fold |
+
+The Host reads the log on demand and caches the answer for fifteen seconds, so
+re-opening the board costs one small request per member.
+
+## The halo
+
+A column that carries work in progress wears a halo: a soft breathing glow
+under it, and a light that runs around its edge. The travelling light is a
+conic gradient whose angle is animated, so the ring keeps the shape of the
+column instead of turning with it.
+
+The rule is **record-based**, exactly like the status counts above it, and it
+counts both kinds of work:
+
+* a shared task the member owns carries the `in_progress` status;
+* a step the member recorded itself carries the `in_progress` status.
+
+A member whose session is running but that registered no work wears no halo —
+it is marked as running in the column header, not as an in-progress item. In
+the status layout only the in-progress column wears one, and only while it
+holds something.
+
+The halo is decorative, so it follows the reader's motion preference: with
+`prefers-reduced-motion: reduce` the animation stops and the column keeps
+its tinted edge.
+
 ## Avatars
 
 The Harness has no avatar concept for agents, so the board owns its own:
@@ -67,7 +113,7 @@ The Harness has no avatar concept for agents, so the board owns its own:
 
 ## The member panel
 
-![member panel](../docs/member-panel.png)
+![member panel](docs/member-panel.png)
 
 Clicking an avatar opens a panel that answers the two questions a team lead
 actually asks: *what is this member responsible for*, and *what did they
@@ -94,7 +140,7 @@ landed on disk. The artifacts are read from the member's **own session log** —
 every `write`, `edit` and `present` tool call — so they are the files that
 exist, not the ones somebody promised to make.
 
-![artifacts](../docs/board-member-artifacts.png)
+![artifacts](docs/board-member-artifacts.png)
 
 Each path is relative to the directory the member worked in, and clicking it
 opens the file in the right sidebar.
@@ -112,7 +158,7 @@ Two things to know about this list:
 What a member's work cost is shown next to the work itself: the column
 carries `15.5M tok · 6m 19s`, and the panel breaks the number down.
 
-![member tokens](../docs/board-member-tokens.png)
+![member tokens](docs/board-member-tokens.png)
 
 The counters are the host's own, so the board and the host's subagent list
 never disagree:
@@ -185,20 +231,18 @@ The plugin imports no other Harness Client package.
 ## Layout
 
 ```
-plugin/src/client-entry.js     the browser half: locale, stylesheet, the View and its components
-plugin/src/avatars.js          the original glyph set, the colour rule, and the Avatar component
-plugin/tests/board.client.test.mjs  jsdom smoke tests over the built bundle
-plugin/tools/preview/          a standalone harness that renders the board with mock data
-plugin/build.mjs               esbuild → client.js in the shell's module-loader envelope
+src/client-entry.js     the browser half: locale, stylesheet, the View and its components
+src/avatars.js          the original glyph set, the colour rule, and the Avatar component
+tests/board.client.test.mjs  jsdom smoke tests over the built bundle
+tools/preview/          a standalone harness that renders the board with mock data
+build.mjs               esbuild → client.js in the shell's module-loader envelope
 ```
 
 ## Build and test
 
 ```bash
-cd plugin
-pnpm install                   # devDependencies only; the plugin has no runtime deps
 node build.mjs                 # → client.js
-node --test tests/*.mjs        # 21 passing
+node --test tests/*.mjs        # 24 passing
 node tools/preview/build.mjs   # → tools/preview/preview.bundle.js
 ```
 
@@ -207,46 +251,47 @@ host palette, which makes layout regressions visible without a running
 Harness:
 
 ```bash
-cd plugin/tools/preview
+cd tools/preview
 playwright screenshot --channel chrome --viewport-size 1800,520 \
   "file://$PWD/index.html" /tmp/board.png
 ```
 
 ## Install
 
-From a clone of this repository, the installer at the repository root does it:
-
-```bash
-./install.sh            # the profile the running Harness uses
-./install.sh web        # a named profile
-```
-
-It runs `dsh plugin --profile <profile> add ./plugin` and adds the bundle row
-to `<profile>/cordis.patch.yml`:
+The plugin is a client bundle, so the Host half is inert:
 
 ```yaml
-- insert:
-    - id: agent-team-board
-      name: 'dsh-agent-team-board'
+# package.json of the DSH profile
+"dependencies": {
+  "@local/agent-team-board": "link:/path/to/agent-team-board"
+},
+"dsh": {
+  "profile": {
+    "bundles": ["@local/agent-team-board"]
+  }
+}
 ```
 
-The plugin is a client bundle, so the Host half is inert. After the profile
-recomposes, the tab appears next to Trajectory. Rebuilding `client.js` swaps
-the plugin in open pages without a reload; the host watches the bundle
-artifact for changes.
+After the profile recomposes, the tab appears next to Trajectory. Rebuilding
+`client.js` swaps the plugin in open pages without a reload; the host watches
+the bundle artifact for changes.
 
 ## Limitations
 
 * The board shows the **shared task board** and each member's **own todo
   list**, not a session's private scratchpad. A member that called neither
   tool shows no work even when its conversation is full of it.
+* The todo list is read **across every round** of a Session, so the counts
+  cover the whole record rather than the round that is running. The Host
+  answers from the Session log, so a member whose log cannot be read falls
+  back to the projection it already holds and says so under the counts.
 * The status counts are **record-based**: "in progress" means a task or a step
   carries that status. A member whose session is running but that registered
   no work is shown as running in the column header, not as an in-progress
-  item.
-* The member panel's *results* are the member's own completed steps — what it
-  reported as done. A member that never kept a todo list shows no steps, even
-  when its conversation is full of work.
+  item. The halo follows the same rule.
+* The member panel's *results* are the member's own recorded steps — what it
+  reported as done, across all of its rounds. A member that never kept a todo
+  list shows no steps, even when its conversation is full of work.
 * A member's *files touched* are the paths its tasks declare, not a diff of
   what it wrote.
 * The token counts are **cumulative for the session**, not per task. A shared

@@ -21,8 +21,7 @@ import { createElement as h, useCallback, useEffect, useLayoutEffect, useMemo, u
 import { Avatar, GLYPHS, glyphFor, readAssignments, writeAssignment } from './avatars.js';
 
 const NS = 'agentTeamBoard';
-/** Must equal the package name: it is the id the shell's module loader keys. */
-const PLUGIN_ID = 'dsh-agent-team-board';
+const PLUGIN_ID = '@local/agent-team-board';
 /** Where the live View registration is kept, so a hot reload can retire it. */
 const REGISTRATION_KEY = '__dshAgentTeamBoardRegistration';
 
@@ -36,6 +35,18 @@ const VIEW_ORDER = 15;
 
 /** Task statuses in board order. */
 const STATUS_ORDER = ['pending', 'in_progress', 'completed'];
+
+/** The route the Host half reads one session's complete task record from. */
+const HISTORY_ROUTE = '/api/agent-team-board/history';
+
+/** How many entries a list shows before the rest fold away behind a toggle. */
+const COLLAPSE_LIMIT = 8;
+
+/** How long one session's task history stays cached in the browser. */
+const HISTORY_TTL_MS = 10_000;
+
+/** The task histories read so far, keyed by Session id. */
+const historyCache = new Map();
 
 const en = {
   'view.label': 'Team Board',
@@ -98,8 +109,13 @@ const en = {
   'panel.artifacts.empty': 'This member produced no files.',
   'panel.artifacts.failed': 'Its session log could not be read.',
   'member.avatar': 'Inspect this member',
-  'column.noTasks': 'No shared task yet',
+  'column.noTasks': 'No task recorded yet',
   'column.cost': '{tokens} tok · {duration}',
+  'column.more': 'Show {count} more',
+  'column.less': 'Show less',
+  'column.earlier': '{count} from earlier rounds',
+  'column.historyLoading': 'Reading the full record…',
+  'column.historyFailed': 'The earlier record could not be read.',
   'roster.label': 'Team',
   'status.empty.pending': 'No pending task',
   'status.empty.in_progress': 'No task in progress',
@@ -168,8 +184,13 @@ const zh = {
   'panel.artifacts.empty': '该成员没有产出文件。',
   'panel.artifacts.failed': '无法读取它的会话日志。',
   'member.avatar': '查看该成员',
-  'column.noTasks': '暂无共享任务',
+  'column.noTasks': '还没有登记任务',
   'column.cost': '{tokens} tok · {duration}',
+  'column.more': '显示其余 {count} 条',
+  'column.less': '收起',
+  'column.earlier': '{count} 条来自更早的轮次',
+  'column.historyLoading': '正在读取完整记录…',
+  'column.historyFailed': '无法读取更早的记录。',
   'roster.label': '团队',
   'status.empty.pending': '没有待处理任务',
   'status.empty.in_progress': '没有进行中的任务',
@@ -198,7 +219,18 @@ const STYLE = `
 .atb-rosterName{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .atb-hint{flex:none;margin:12px 20px 0;padding:9px 12px;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);font-size:12px;color:var(--dsw-alias-label-secondary)}
 .atb-board{flex:1;min-height:0;overflow:auto;display:flex;align-items:flex-start;gap:12px;padding:16px 20px 24px}
-.atb-column{flex:none;width:276px;max-width:320px;display:flex;flex-direction:column;gap:8px;background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);padding:10px}
+.atb-column{flex:none;position:relative;width:276px;max-width:320px;display:flex;flex-direction:column;gap:8px;background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);padding:10px}
+/* A column that carries work in progress wears a halo: a soft breathing glow
+   under it, and a light that runs around its edge. The travelling light is a
+   conic gradient whose angle is animated, so the ring keeps the shape of the
+   column instead of turning with it. */
+@property --atb-halo-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
+@keyframes atb-halo-spin{to{--atb-halo-angle:360deg}}
+@keyframes atb-halo-breathe{0%,100%{opacity:.45}50%{opacity:1}}
+.atb-columnActive{border-color:color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, var(--dsw-alias-border-l1))}
+.atb-columnActive::before{content:'';position:absolute;inset:-1px;border-radius:inherit;box-shadow:0 0 16px -2px color-mix(in srgb, var(--dsw-alias-state-business-primary) 55%, transparent);animation:atb-halo-breathe 2.8s ease-in-out infinite;pointer-events:none}
+.atb-columnActive::after{content:'';position:absolute;inset:-1px;border-radius:inherit;padding:1px;background:conic-gradient(from var(--atb-halo-angle), transparent 0turn 0.34turn, color-mix(in srgb, var(--dsw-alias-state-business-primary) 90%, transparent) 0.5turn, transparent 0.66turn, transparent 1turn);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;animation:atb-halo-spin 3.4s linear infinite;pointer-events:none}
+@media (prefers-reduced-motion: reduce){.atb-columnActive::before,.atb-columnActive::after{animation:none}}
 .atb-columnHead{display:flex;align-items:center;gap:6px;padding:2px 2px 6px;min-width:0}
 .atb-columnName{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .atb-columnRole{flex:none;font-size:10px;line-height:15px;color:var(--dsw-alias-label-tertiary);border:.5px solid var(--dsw-alias-border-l1);border-radius:4px;padding:0 4px}
@@ -222,6 +254,9 @@ const STYLE = `
 .atb-statPillDone{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb, var(--dsw-alias-state-success-primary) 40%, transparent)}
 .atb-statCount{font-weight:500;font-variant-numeric:tabular-nums}
 .atb-columnCost{margin:0 2px;font-size:10.5px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+.atb-columnMeta{margin:0 2px;font-size:10.5px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.atb-fold{margin-top:6px;padding:2px 0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:16px;cursor:pointer;text-align:left}
+.atb-fold:hover{color:var(--dsw-alias-label-primary)}
 .atb-tokenTotal{font-size:12.5px;line-height:19px;color:var(--dsw-alias-label-primary);margin:0 0 6px}
 .atb-tokenLine{margin:0 0 4px;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary)}
 .atb-cards{display:flex;flex-direction:column;gap:7px}
@@ -232,7 +267,8 @@ const STYLE = `
 .atb-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px 10px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
 .atb-metaItem{display:inline-flex;align-items:center;gap:4px;min-width:0}
 .atb-metaValue{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
-.atb-pill{display:inline-flex;align-items:center;flex:none;font-size:10px;line-height:16px;border-radius:9px;padding:0 6px;border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+.atb-pill{display:inline-flex;align-items:center;gap:4px;flex:none;font-size:10px;line-height:16px;border-radius:9px;padding:0 6px;border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+.atb-pill .atb-stepMark{width:11px;height:11px;margin-top:0}
 .atb-pillProgress{color:var(--dsw-alias-state-business-primary);border-color:color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, transparent)}
 .atb-pillDone{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb, var(--dsw-alias-state-success-primary) 40%, transparent)}
 .atb-pillBlocked{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent)}
@@ -278,8 +314,11 @@ const STYLE = `
 .atb-pickerAuto{font-size:11px;color:var(--dsw-alias-label-tertiary);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);padding:4px 8px;cursor:pointer;background:transparent}
 .atb-steps{display:flex;flex-direction:column;gap:5px;margin:0;padding:0;list-style:none}
 .atb-step{display:flex;align-items:flex-start;gap:7px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.atb-stepMark{flex:none;width:14px;height:14px;margin-top:2px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 18%, transparent);color:var(--dsw-alias-state-success-primary)}
-.atb-stepPending .atb-stepMark{background:color-mix(in srgb, var(--dsw-alias-label-dimmed) 20%, transparent);color:var(--dsw-alias-label-tertiary)}
+.atb-stepMark{flex:none;width:14px;height:14px;margin-top:2px;display:block;overflow:visible}
+.atb-markPending{color:var(--dsw-alias-label-tertiary)}
+.atb-markProgress{color:var(--dsw-alias-state-business-primary)}
+.atb-markDone{color:var(--dsw-alias-state-success-primary)}
+.atb-stepPending{color:var(--dsw-alias-label-tertiary)}
 .atb-files{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .atb-file{display:inline-flex;align-items:center;gap:5px;max-width:100%;font-size:11px;line-height:20px;padding:2px 8px;border-radius:var(--dsw-radius-sm);border:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);cursor:pointer;font-family:var(--dsh-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
 .atb-file:hover{border-color:var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary)}
@@ -313,6 +352,25 @@ function statusPillClass(status) {
   if (status === 'in_progress') return 'atb-pill atb-pillProgress';
   if (status === 'completed') return 'atb-pill atb-pillDone';
   return 'atb-pill';
+}
+
+/**
+ * The class of a board column. A column that carries work in progress wears
+ * the halo, so the board says where the work is without being read.
+ * @param {boolean} active - whether the column carries work in progress.
+ * @returns {string} the class name.
+ */
+function columnClass(active) {
+  return active ? 'atb-column atb-columnActive' : 'atb-column';
+}
+
+/**
+ * Whether a set of board items carries work in progress.
+ * @param {Array<object>} items - the items, each carrying a status.
+ * @returns {boolean} true when at least one item is in progress.
+ */
+function hasWorkInProgress(items) {
+  return (items ?? []).some((item) => item?.status === 'in_progress');
 }
 
 /**
@@ -385,6 +443,58 @@ function tokenBuckets(usage) {
   const cacheRead = totals.cacheReadTokens ?? 0;
   const cacheWrite = totals.cacheWriteTokens ?? 0;
   return { uncached, output, cacheRead, cacheWrite, total: uncached + output + cacheRead + cacheWrite };
+}
+
+/**
+ * Read one session's complete task record from the Host half.
+ *
+ * The `todos` projection only carries the list of the round that is running: a
+ * new round starts with an empty list, so the work of earlier rounds is gone
+ * from it. The Host reads the session log and answers with every item that
+ * session ever recorded, so the board can show the whole record instead of one
+ * round's slice of it.
+ * @param {string} sessionId - the member's Session id.
+ * @returns {Promise<Array<object>>} the recorded items, newest first.
+ */
+async function fetchTodoHistory(sessionId) {
+  const cached = historyCache.get(sessionId);
+  if (cached !== undefined && Date.now() - cached.at < HISTORY_TTL_MS) return cached.items;
+  const response = await fetch(`${HISTORY_ROUTE}?${new URLSearchParams({ sessionId }).toString()}`, {
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) throw new Error(`the task history answered ${response.status}`);
+  const body = await response.json();
+  const items = Array.isArray(body?.items) ? body.items : [];
+  historyCache.set(sessionId, { at: Date.now(), items });
+  return items;
+}
+
+/**
+ * One member's complete task record: what it recorded in the round that is
+ * running, plus what earlier rounds recorded and the projection no longer
+ * carries.
+ *
+ * An item the running round also lists counts once, and the running round wins
+ * its status: it is the newest word on that item.
+ * @param {Array<object>} currentTodos - the `todos` projection value.
+ * @param {Array<object>} historyItems - the items read from the session log.
+ * @returns {Array<object>} the merged record, newest first.
+ */
+function mergeTaskItems(currentTodos, historyItems) {
+  const items = new Map();
+  const add = (content, status, origin, seq) => {
+    if (typeof content !== 'string' || content === '') return;
+    items.set(content, { content, status: status ?? 'pending', origin, seq });
+  };
+  for (const item of historyItems ?? []) {
+    add(item?.content, item?.status, 'history', typeof item?.seq === 'number' ? item.seq : 0);
+  }
+  for (const todo of currentTodos ?? []) {
+    add(todo?.content, todo?.status, 'current', Number.MAX_SAFE_INTEGER);
+  }
+  // Newest first: the running round leads, then the history by the write that
+  // touched an item last.
+  return [...items.values()].sort((left, right) => right.seq - left.seq);
 }
 
 /**
@@ -530,6 +640,57 @@ function relativeToCwd(cwd, path) {
 }
 
 /**
+ * The icon that says what state one item is in.
+ *
+ * A glyph borrowed from a text font cannot be lined up with the row it
+ * belongs to, and it changes shape with the platform's font. The three states
+ * are therefore drawn here: an empty ring for work that has not started, a
+ * ring with a solid core for work in progress, and a soft disc with a crisp
+ * check for work that is done.
+ * @param {object} props - component props.
+ * @param {string} props.status - the item status.
+ * @param {number} [props.size] - the icon's edge length in pixels.
+ * @returns the icon element tree.
+ */
+function StatusMark({ status, size = 14 }) {
+  const className = status === 'completed'
+    ? 'atb-stepMark atb-markDone'
+    : status === 'in_progress'
+      ? 'atb-stepMark atb-markProgress'
+      : 'atb-stepMark atb-markPending';
+  return h(
+    'svg',
+    {
+      className,
+      viewBox: '0 0 14 14',
+      width: size,
+      height: size,
+      'aria-hidden': 'true',
+      focusable: 'false',
+    },
+    status === 'completed'
+      ? [
+        h('circle', { key: 'disc', cx: 7, cy: 7, r: 6.6, fill: 'currentColor', opacity: 0.16 }),
+        h('path', {
+          key: 'tick',
+          d: 'M4.1 7.3 L6.1 9.2 L9.9 5.1',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.7,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        }),
+      ]
+      : status === 'in_progress'
+        ? [
+          h('circle', { key: 'ring', cx: 7, cy: 7, r: 5.3, fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, opacity: 0.45 }),
+          h('circle', { key: 'core', cx: 7, cy: 7, r: 2.7, fill: 'currentColor' }),
+        ]
+        : h('circle', { key: 'ring', cx: 7, cy: 7, r: 5.3, fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, opacity: 0.6 }),
+  );
+}
+
+/**
  * One shared task, rendered as a card.
  * @param {object} props - component props.
  * @param {object} props.task - the projected task view.
@@ -570,7 +731,9 @@ function TaskCard({ task, t }) {
     h(
       'div',
       { className: 'atb-meta' },
-      h('span', { className: statusPillClass(task.status) }, t(`status.${task.status}`)),
+      h('span', { className: statusPillClass(task.status) },
+        h(StatusMark, { status: task.status, size: 11 }),
+        t(`status.${task.status}`)),
       task.status === 'pending'
         ? h(
           'span',
@@ -657,7 +820,7 @@ function TaskCard({ task, t }) {
  * @param {Function} props.t - the bound translator.
  * @returns the column element tree.
  */
-function MemberColumn({ member, tasks, leadDuty, useSessionStatus, useSessions, onOpen, onInspect, leadSessionId, glyphId, t }) {
+function MemberColumn({ member, tasks, steps, historyState, leadDuty, useSessionStatus, useSessions, onOpen, onInspect, leadSessionId, glyphId, t }) {
   // Live session status decides whether an active member is running; the
   // roster phase decides the rest.
   const running = useSessionStatus((state) => state.get(member.id)?.running);
@@ -672,15 +835,21 @@ function MemberColumn({ member, tasks, leadDuty, useSessionStatus, useSessions, 
   const duty = catalogDuty !== undefined && catalogDuty !== null && catalogDuty !== ''
     ? catalogDuty
     : member.role === 'lead' ? leadDuty : undefined;
-  const steps = useSessions((state) => state.byId[member.id]?.projectionValues?.todos);
   // What the member's own turns cost: the tokens they consumed and the time
   // they took. The buckets are the ones the host's subagent list counts.
   const usage = useSessions((state) => state.byId[member.id]?.projectionValues?.tokenUsage);
   const memberStats = useSessions((state) => state.byId[member.id]?.projectionValues?.sessionStats);
   const buckets = tokenBuckets(usage);
   const durationMs = (memberStats?.llmMs ?? 0) + (memberStats?.toolMs ?? 0);
-  // The member's own task list, in the order it recorded it.
+  // The member's complete task record, newest first: what the running round
+  // recorded plus what earlier rounds recorded.
   const stepList = (steps ?? []).filter((step) => step !== null && step !== undefined && typeof step.content === 'string');
+  // Which status groups the user has unfolded.
+  const [expanded, setExpanded] = useState({});
+  const toggle = (key) => setExpanded((previous) => ({ ...previous, [key]: previous[key] !== true }));
+  // The items that come from earlier rounds, which the running projection no
+  // longer carries.
+  const earlierCount = stepList.filter((step) => step.origin === 'history').length;
   // The member's work by status: the shared tasks it owns and the steps it
   // recorded, in the same three buckets the status layout uses. A step with
   // no status is still work, so it counts as pending.
@@ -690,12 +859,18 @@ function MemberColumn({ member, tasks, leadDuty, useSessionStatus, useSessions, 
     steps: stepList.filter((step) => (step.status ?? 'pending') === status),
   }));
   const itemCount = groups.reduce((count, group) => count + group.tasks.length + group.steps.length, 0);
+  // Work in progress is what the column is about right now, so the column
+  // wears the halo while it lasts. Both kinds of work count: the shared task
+  // it owns and the step it recorded itself.
+  const inProgress = groups.find((group) => group.status === 'in_progress');
+  const active = inProgress !== undefined
+    && inProgress.tasks.length + inProgress.steps.length > 0;
   const status = member.phase === 'active'
     ? (running ?? summaryRunning) === true ? 'running' : 'inactive'
     : member.phase;
   return h(
     'section',
-    { className: 'atb-column' },
+    { className: columnClass(active) },
     h(
       'div',
       { className: 'atb-columnHead' },
@@ -756,11 +931,24 @@ function MemberColumn({ member, tasks, leadDuty, useSessionStatus, useSessions, 
         h('span', { className: 'atb-statCount' }, String(group.tasks.length + group.steps.length)),
       )),
     ),
+    // How much of the record came from earlier rounds, and whether the log has
+    // been read yet.
+    historyState === 'loading'
+      ? h('p', { className: 'atb-columnMeta' }, t('column.historyLoading'))
+      : historyState === 'failed'
+        ? h('p', { className: 'atb-columnMeta' }, t('column.historyFailed'))
+        : earlierCount > 0
+          ? h('p', { className: 'atb-columnMeta' }, t('column.earlier', { count: String(earlierCount) }))
+          : null,
     // The member's work, grouped by status. A group without work is not
     // rendered: the counts above already say it is empty.
     groups.map((group) => {
       const count = group.tasks.length + group.steps.length;
       if (count === 0) return null;
+      // The newest entries stay on screen; the rest fold away until the user
+      // asks for them.
+      const shown = expanded[group.status] === true ? group.steps : group.steps.slice(0, COLLAPSE_LIMIT);
+      const hidden = group.steps.length - shown.length;
       return h(
         'div',
         { key: group.status, className: 'atb-group' },
@@ -780,17 +968,34 @@ function MemberColumn({ member, tasks, leadDuty, useSessionStatus, useSessions, 
           : null,
         group.steps.length > 0
           ? h(
-            'ul',
-            { className: 'atb-steps' },
-            group.steps.map((step, index) => h(
-              'li',
-              {
-                key: `${group.status}-${index}-${step.content}`,
-                className: step.status === 'completed' ? 'atb-step' : 'atb-step atb-stepPending',
-              },
-              h('span', { className: 'atb-stepMark' }, step.status === 'completed' ? '✓' : '·'),
-              h('span', {}, step.content),
-            )),
+            'div',
+            null,
+            h(
+              'ul',
+              { className: 'atb-steps' },
+              shown.map((step, index) => h(
+                'li',
+                {
+                  key: `${group.status}-${index}-${step.content}`,
+                  className: step.status === 'completed' ? 'atb-step' : 'atb-step atb-stepPending',
+                },
+                h(StatusMark, { status: step.status }),
+                h('span', {}, step.content),
+              )),
+            ),
+            group.steps.length > COLLAPSE_LIMIT
+              ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'atb-fold',
+                  onClick: () => { toggle(group.status); },
+                },
+                expanded[group.status] === true
+                  ? t('column.less')
+                  : t('column.more', { count: String(hidden) }),
+              )
+              : null,
           )
           : null,
       );
@@ -816,9 +1021,17 @@ function MemberColumn({ member, tasks, leadDuty, useSessionStatus, useSessions, 
  */
 function StatusColumn({ status, tasks, steps, assignments, onInspect, t }) {
   const dotClass = statusDotClass(status);
+  // Only the in-progress column carries work in progress, so only it wears
+  // the halo — and only while it holds something.
+  const active = status === 'in_progress' && tasks.length + steps.length > 0;
+  // The newest entries stay on screen; the rest fold away until the user asks
+  // for them.
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? steps : steps.slice(0, COLLAPSE_LIMIT);
+  const hidden = steps.length - shown.length;
   return h(
     'section',
-    { className: 'atb-column' },
+    { className: columnClass(active) },
     h(
       'div',
       { className: 'atb-columnHead' },
@@ -839,7 +1052,7 @@ function StatusColumn({ status, tasks, steps, assignments, onInspect, t }) {
         h(
           'ul',
           { className: 'atb-steps' },
-          steps.map(({ member, step }, index) => h(
+          shown.map(({ member, step }, index) => h(
             'li',
             {
               key: `${member.id}-${index}-${step.content}`,
@@ -859,6 +1072,17 @@ function StatusColumn({ status, tasks, steps, assignments, onInspect, t }) {
             h('span', {}, step.content),
           )),
         ),
+        steps.length > COLLAPSE_LIMIT
+          ? h(
+            'button',
+            {
+              type: 'button',
+              className: 'atb-fold',
+              onClick: () => { setExpanded((value) => !value); },
+            },
+            expanded ? t('column.less') : t('column.more', { count: String(hidden) }),
+          )
+          : null,
       ),
   );
 }
@@ -952,6 +1176,12 @@ function MemberPanel({
   t,
 }) {
   const [briefOpen, setBriefOpen] = useState(false);
+  // The record can be long; the newest entries stay on screen until the user
+  // asks for the rest.
+  const [stepsExpanded, setStepsExpanded] = useState(false);
+  const stepList = steps ?? [];
+  const shownSteps = stepsExpanded ? stepList : stepList.slice(0, COLLAPSE_LIMIT);
+  const hiddenSteps = stepList.length - shownSteps.length;
   // What this member's turns cost, split the way the host counts it.
   const buckets = tokenBuckets(usage);
   const durationMs = (stats?.llmMs ?? 0) + (stats?.toolMs ?? 0);
@@ -1062,7 +1292,9 @@ function MemberPanel({
               h(
                 'span',
                 { className: 'atb-panelTaskMeta' },
-                h('span', { className: statusPillClass(task.status) }, t(`status.${task.status}`)),
+                h('span', { className: statusPillClass(task.status) },
+        h(StatusMark, { status: task.status, size: 11 }),
+        t(`status.${task.status}`)),
                 task.description == null || task.description === ''
                   ? null
                   : h('span', {}, task.description.length > 120 ? `${task.description.slice(0, 120)}…` : task.description),
@@ -1116,8 +1348,8 @@ function MemberPanel({
       h(
         'section',
         { className: 'atb-section' },
-        h('h3', { className: 'atb-sectionTitle' }, t('panel.results')),
-        steps == null || steps.length === 0
+        h('h3', { className: 'atb-sectionTitle' }, `${t('panel.results')} · ${stepList.length}`),
+        stepList.length === 0
           ? h('p', { className: 'atb-dutyMuted' }, t('panel.results.missing'))
           : h(
             'div',
@@ -1126,16 +1358,27 @@ function MemberPanel({
             h(
               'ul',
               { className: 'atb-steps' },
-              steps.map((step, index) => h(
+              shownSteps.map((step, index) => h(
                 'li',
                 {
                   key: `${step.content}`,
                   className: step.status === 'completed' ? 'atb-step' : 'atb-step atb-stepPending',
                 },
-                h('span', { className: 'atb-stepMark' }, step.status === 'completed' ? '✓' : '·'),
+                h(StatusMark, { status: step.status }),
                 h('span', {}, step.content),
               )),
             ),
+            stepList.length > COLLAPSE_LIMIT
+              ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'atb-fold',
+                  onClick: () => { setStepsExpanded((value) => !value); },
+                },
+                stepsExpanded ? t('column.less') : t('column.more', { count: String(hiddenSteps) }),
+              )
+              : null,
           ),
         files.length === 0
           ? null
@@ -1201,13 +1444,42 @@ function TeamBoardView({ ctx, sessionId, useSession, useSessions, useSessionStat
   // shared task board the team maintains, and the list each teammate kept of
   // what it was asked to do.
   const byId = useSessions((state) => state.byId);
+  // The complete task record of every member. The `todos` projection carries
+  // the round that is running; the Host reads the session log for the rounds
+  // before it, so the record survives the start of a new round.
+  const [histories, setHistories] = useState({});
+  const memberKey = members.map((member) => member.id).join(',');
+  useEffect(() => {
+    let cancelled = false;
+    const wanted = members.filter((member) => {
+      const cached = historyCache.get(member.id);
+      return cached === undefined || Date.now() - cached.at >= HISTORY_TTL_MS;
+    });
+    if (wanted.length === 0) return undefined;
+    setHistories((previous) => {
+      const next = { ...previous };
+      for (const member of wanted) next[member.id] = { state: 'loading', items: [] };
+      return next;
+    });
+    Promise.all(wanted.map(async (member) => {
+      try {
+        const items = await fetchTodoHistory(member.id);
+        return [member.id, { state: 'ready', items }];
+      } catch {
+        return [member.id, { state: 'failed', items: [] }];
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      setHistories((previous) => ({ ...previous, ...Object.fromEntries(entries) }));
+    });
+    return () => { cancelled = true; };
+  }, [memberKey]);
   const memberSteps = useMemo(
     () => members.map((member) => ({
       member,
-      steps: (byId?.[member.id]?.projectionValues?.todos ?? [])
-        .filter((step) => step !== null && step !== undefined && typeof step.content === 'string'),
+      steps: mergeTaskItems(byId?.[member.id]?.projectionValues?.todos, histories[member.id]?.items),
     })),
-    [members, byId],
+    [members, byId, histories],
   );
   // The Lead is never in the catalog, so it gets a duty of its own instead of
   // being reported as a member without a responsibility.
@@ -1259,9 +1531,14 @@ function TeamBoardView({ ctx, sessionId, useSession, useSessions, useSessionStat
   const brief = useSessions((state) => (selectedId === null
     ? undefined
     : state.byId[selectedId]?.projectionValues?.titleInput?.first?.text));
-  const steps = useSessions((state) => (selectedId === null
-    ? undefined
-    : state.byId[selectedId]?.projectionValues?.todos));
+  // The selected member's complete task record: the running round's list plus
+  // what earlier rounds recorded.
+  const steps = useMemo(
+    () => (selectedId === null
+      ? undefined
+      : memberSteps.find((entry) => entry.member.id === selectedId)?.steps ?? []),
+    [selectedId, memberSteps],
+  );
   const stats = useSessions((state) => (selectedId === null
     ? undefined
     : state.byId[selectedId]?.projectionValues?.sessionStats));
@@ -1416,6 +1693,8 @@ function TeamBoardView({ ctx, sessionId, useSession, useSessions, useSessionStat
             key: column.member.id,
             member: column.member,
             tasks: column.tasks,
+            steps: memberSteps.find((entry) => entry.member.id === column.member.id)?.steps ?? [],
+            historyState: histories[column.member.id]?.state,
             leadDuty,
             useSessionStatus,
             useSessions,
@@ -1429,7 +1708,7 @@ function TeamBoardView({ ctx, sessionId, useSession, useSessions, useSessionStat
             ? null
             : h(
               'section',
-              { key: 'unassigned', className: 'atb-column' },
+              { key: 'unassigned', className: columnClass(hasWorkInProgress(unassigned)) },
               h(
                 'div',
                 { className: 'atb-columnHead' },

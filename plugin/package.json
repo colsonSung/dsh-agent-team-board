@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-team-board",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "A Team Board tab for the DeepSeek Harness: watch an Agent Team cooperate — one column per teammate, with their shared tasks, token cost and artifacts.",

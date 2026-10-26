@@ -7,7 +7,6 @@
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
@@ -22,11 +21,6 @@ globalThis.Node = dom.window.Node
 globalThis.Element = dom.window.Element
 globalThis.getComputedStyle = dom.window.getComputedStyle
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
-
-/** The package name, which the built bundle must register itself under. */
-const PACKAGE_NAME = JSON.parse(
-  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-).name
 
 /** The Lead Session's `agentTeam` projection, shaped like the Host's view. */
 const TEAM = {
@@ -83,7 +77,7 @@ async function loadClientModule() {
   dom.window.__ModuleLoader__ = { load: (value) => { registration = value } }
   await import('../client.js')
   assert.ok(registration, 'the bundle must register a module factory')
-  assert.equal(registration.id, PACKAGE_NAME, 'the bundle id must equal the package name')
+  assert.equal(registration.id, 'dsh-agent-team-board')
   loaded = registration.factory((specifier) => {
     if (specifier === 'react') return React
     throw new Error(`unexpected module request: ${specifier}`)
@@ -149,7 +143,7 @@ function createProps() {
       'lead-session': { running: true },
       'reviewer-session': {
         running: true,
-        cwd: '/workspace/demo-project',
+        cwd: '/Users/ethansong/Downloads/workspace/onerway-business-systems',
         projectionValues: {
           todos: [
             { content: 'Read the contract and confirm the phase numbers', status: 'completed' },
@@ -316,9 +310,9 @@ test('lists the member’s own task list in its column', async () => {
   // The reviewer's column carries its own task list, not a bare note.
   const steps = Array.from(columns[1].querySelectorAll('.atb-step')).map((node) => node.textContent)
   assert.deepEqual(steps, [
-    '✓Read the contract and confirm the phase numbers',
-    '✓Write merchant/SKILL.md',
-    '✓Write merchant/README.md',
+    'Read the contract and confirm the phase numbers',
+    'Write merchant/SKILL.md',
+    'Write merchant/README.md',
   ])
   // The work sits in the group of its own status: the shared task in
   // progress first, then the member's finished steps.
@@ -377,9 +371,9 @@ test('breaks a member column down by status', async () => {
     cards: Array.from(group.querySelectorAll('.atb-cardTitle')).map((node) => node.textContent),
   }))
   assert.deepEqual(groups, [
-    { title: 'status.pending1', count: '1', steps: ['·Confirm the launch date'], cards: [] },
-    { title: 'status.in_progress2', count: '2', steps: ['·Write the rollout note'], cards: ['Review the pricing copy'] },
-    { title: 'status.completed1', count: '1', steps: ['✓Read the contract'], cards: [] },
+    { title: 'status.pending1', count: '1', steps: ['Confirm the launch date'], cards: [] },
+    { title: 'status.in_progress2', count: '2', steps: ['Write the rollout note'], cards: ['Review the pricing copy'] },
+    { title: 'status.completed1', count: '1', steps: ['Read the contract'], cards: [] },
   ])
   await act(async () => { root.unmount() })
 })
@@ -574,9 +568,9 @@ test('shows the duty, the tasks and the results of the inspected member', async 
   // The results are the member's own completed steps.
   const steps = Array.from(panel.querySelectorAll('.atb-step')).map((node) => node.textContent)
   assert.deepEqual(steps, [
-    '✓Read the contract and confirm the phase numbers',
-    '✓Write merchant/SKILL.md',
-    '✓Write merchant/README.md',
+    'Read the contract and confirm the phase numbers',
+    'Write merchant/SKILL.md',
+    'Write merchant/README.md',
   ])
   // The member's own task is listed, and its file is offered.
   assert.ok(panel.textContent.includes('Review the pricing copy'))
@@ -613,6 +607,66 @@ test('pins a different avatar and keeps it', async () => {
   const after = column().querySelector('.atb-avatar svg').innerHTML
   assert.notEqual(after, before, 'the member avatar must change')
   await act(async () => { root.unmount() })
+})
+
+test('marks a column that carries work in progress with a halo', async () => {
+  const { container, root } = await mount()
+  try {
+    const columns = Array.from(container.querySelectorAll('.atb-column'))
+    // The reviewer owns the shared task that is in progress, so its column
+    // wears the halo.
+    assert.equal(columns[1].classList.contains('atb-columnActive'), true)
+    // The lead's own work is done, the qa member failed and the unassigned
+    // task is only pending: none of them carries work in progress.
+    assert.equal(columns[0].classList.contains('atb-columnActive'), false)
+    assert.equal(columns[2].classList.contains('atb-columnActive'), false)
+    assert.equal(columns[3].classList.contains('atb-columnActive'), false)
+  } finally {
+    await act(async () => { root.unmount() })
+  }
+})
+
+test('marks a member whose own step is in progress with a halo', async () => {
+  const exports = await loadClientModule()
+  const harness = createContext()
+  exports.apply(harness.ctx)
+  const entry = harness.registrations.find((entry) => entry.options?.id === 'agent-team-board')
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = ReactDOM.createRoot(container)
+  const props = createProps()
+  // The qa member owns no shared task, but one of its own steps is in
+  // progress: that is work in progress too.
+  props.useSessions = (selector) => selector({
+    phase: 'ready',
+    projectionsBySession: { 'lead-session': { values: { agentTeam: TEAM, subagentCatalog: [] } } },
+    byId: {
+      'lead-session': { running: true },
+      'reviewer-session': { running: false, projectionValues: { todos: [] } },
+      'qa-session': {
+        running: true,
+        projectionValues: { todos: [{ content: 'Recover the failed spawn', status: 'in_progress' }] },
+      },
+    },
+  })
+  await act(async () => { root.render(React.createElement(entry.component, props)) })
+  const columns = Array.from(container.querySelectorAll('.atb-column'))
+  assert.equal(columns[2].classList.contains('atb-columnActive'), true)
+  await act(async () => { root.unmount() })
+})
+
+test('marks only the in-progress column of the status layout with a halo', async () => {
+  const { container, root } = await mount()
+  try {
+    const buttons = Array.from(container.querySelectorAll('.atb-layoutButton'))
+    await act(async () => { buttons[1].click() })
+    const columns = Array.from(container.querySelectorAll('.atb-column'))
+    assert.equal(columns[1].classList.contains('atb-columnActive'), true)
+    assert.equal(columns[0].classList.contains('atb-columnActive'), false)
+    assert.equal(columns[2].classList.contains('atb-columnActive'), false)
+  } finally {
+    await act(async () => { root.unmount() })
+  }
 })
 
 test('shows a notice when the session has no team', async () => {
@@ -666,4 +720,218 @@ test('survives a member whose projections carry null values', async () => {
   assert.ok(panel.textContent.includes('panel.dutyMissing'))
   assert.ok(panel.textContent.includes('panel.results.missing'))
   await act(async () => { root.unmount() })
+})
+
+/**
+ * Mount the board with a given session store and a stubbed Host route.
+ *
+ * The board reads one Session's complete task record from the Host, so the
+ * tests answer that route themselves instead of touching the network.
+ * @param {object} state - the session store the board reads.
+ * @param {Map<string, Array<object>>} histories - the record per Session id.
+ * @param {string} sessionId - the Session the board is shown in.
+ * @returns {Promise<object>} the container plus the root.
+ */
+async function mountWith(state, histories, sessionId) {
+  const exports = await loadClientModule()
+  const harness = createContext()
+  exports.apply(harness.ctx)
+  const entry = harness.registrations.find((entry) => entry.options?.id === 'agent-team-board')
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = ReactDOM.createRoot(container)
+  const previous = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const asked = new URL(String(url), 'https://dsh.local/').searchParams.get('sessionId')
+    const items = histories.get(asked) ?? []
+    return { ok: true, status: 200, json: async () => ({ sessionId: asked, items }) }
+  }
+  try {
+    const props = createProps()
+    props.sessionId = sessionId
+    props.useSessions = (selector) => selector(state)
+    await act(async () => { root.render(React.createElement(entry.component, props)) })
+    // Let the Host route answer and the board redraw with the record.
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0) }) })
+  } finally {
+    globalThis.fetch = previous
+  }
+  return { container, root }
+}
+
+test('shows the complete record of a member whose current round is empty', async () => {
+  const { container, root } = await mountWith(
+    {
+      phase: 'ready',
+      projectionsBySession: { 'history-lead': { values: { agentTeam: { members: [{ id: 'history-lead', name: 'lead', role: 'lead', phase: 'active' }], tasks: [] } } } },
+      byId: { 'history-lead': { running: true } },
+    },
+    new Map([
+      ['history-lead', [
+        { content: 'Design the protocol frame', status: 'completed', seq: 30 },
+        { content: 'Wire the host side', status: 'completed', seq: 40 },
+        { content: 'Verify end to end', status: 'in_progress', seq: 50 },
+      ]],
+    ]),
+    'history-lead',
+  )
+  try {
+    const column = container.querySelector('.atb-column')
+    const steps = Array.from(column.querySelectorAll('.atb-step')).map((node) => node.textContent)
+    // The record of the earlier rounds is on screen even though the running
+    // round's own projection carries nothing.
+    assert.deepEqual(steps, ['Verify end to end', 'Wire the host side', 'Design the protocol frame'])
+    const counts = Array.from(column.querySelectorAll('.atb-columnStats .atb-statCount')).map((node) => node.textContent)
+    assert.deepEqual(counts, ['0', '1', '2'], 'the counts cover the whole record')
+    assert.ok(column.textContent.includes('column.earlier'), 'the column says how much came from earlier rounds')
+  } finally {
+    await act(async () => { root.unmount() })
+  }
+})
+
+test('folds a long record behind a toggle', async () => {
+  const items = Array.from({ length: 12 }, (unused, index) => ({
+    content: `Step ${index}`,
+    status: 'completed',
+    seq: 100 - index,
+  }))
+  const { container, root } = await mountWith(
+    {
+      phase: 'ready',
+      projectionsBySession: { 'fold-lead': { values: { agentTeam: { members: [{ id: 'fold-lead', name: 'lead', role: 'lead', phase: 'active' }], tasks: [] } } } },
+      byId: { 'fold-lead': { running: true } },
+    },
+    new Map([['fold-lead', items]]),
+    'fold-lead',
+  )
+  try {
+    const column = container.querySelector('.atb-column')
+    assert.equal(column.querySelectorAll('.atb-step').length, 8, 'only the newest entries stay on screen')
+    const fold = column.querySelector('.atb-fold')
+    assert.ok(fold, 'the folded entries need a way out')
+    assert.ok(fold.textContent.includes('count=4'), 'the toggle says how many are folded')
+    await act(async () => { fold.click() })
+    assert.equal(column.querySelectorAll('.atb-step').length, 12, 'the whole record is one click away')
+    assert.ok(column.querySelector('.atb-fold').textContent.includes('column.less'))
+  } finally {
+    await act(async () => { root.unmount() })
+  }
+})
+
+test('the running round decides the status of an item the history also holds', async () => {
+  const { container, root } = await mountWith(
+    {
+      phase: 'ready',
+      projectionsBySession: { 'both-lead': { values: { agentTeam: { members: [{ id: 'both-lead', name: 'lead', role: 'lead', phase: 'active' }], tasks: [] } } } },
+      byId: {
+        'both-lead': {
+          running: true,
+          projectionValues: { todos: [{ content: 'Ship the release', status: 'in_progress' }] },
+        },
+      },
+    },
+    new Map([['both-lead', [{ content: 'Ship the release', status: 'completed', seq: 10 }]]]),
+    'both-lead',
+  )
+  try {
+    const column = container.querySelector('.atb-column')
+    const steps = Array.from(column.querySelectorAll('.atb-step'))
+    assert.equal(steps.length, 1, 'the item is counted once')
+    // The running round says it is still in progress, so it is not done.
+    assert.ok(steps[0].className.includes('atb-stepPending'))
+    const counts = Array.from(column.querySelectorAll('.atb-columnStats .atb-statCount')).map((node) => node.textContent)
+    assert.deepEqual(counts, ['0', '1', '0'])
+  } finally {
+    await act(async () => { root.unmount() })
+  }
+})
+
+test('keeps the board usable when the record cannot be read', async () => {
+  const exports = await loadClientModule()
+  const harness = createContext()
+  exports.apply(harness.ctx)
+  const entry = harness.registrations.find((entry) => entry.options?.id === 'agent-team-board')
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = ReactDOM.createRoot(container)
+  const previous = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('the host is away') }
+  try {
+    const props = createProps()
+    props.useSessions = (selector) => selector({
+      phase: 'ready',
+      projectionsBySession: { 'lead-session': { values: { agentTeam: TEAM } } },
+      byId: { 'lead-session': { running: true } },
+    })
+    await act(async () => { root.render(React.createElement(entry.component, props)) })
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0) }) })
+    // The board still shows what the projection holds and says the rest could
+    // not be read.
+    assert.ok(container.querySelector('.atb-column'), 'the board still renders')
+    assert.ok(container.textContent.includes('column.historyFailed'))
+  } finally {
+    globalThis.fetch = previous
+    await act(async () => { root.unmount() })
+  }
+})
+
+test('marks every status with a drawn icon, not a font glyph', async () => {
+  const { container, root } = await mountWith(
+    {
+      phase: 'ready',
+      projectionsBySession: { 'icon-lead': { values: { agentTeam: { members: [{ id: 'icon-lead', name: 'lead', role: 'lead', phase: 'active' }], tasks: [] } } } },
+      byId: {
+        'icon-lead': {
+          running: true,
+          projectionValues: {
+            todos: [
+              { content: 'Not started yet', status: 'pending' },
+              { content: 'Being worked on', status: 'in_progress' },
+              { content: 'Already done', status: 'completed' },
+            ],
+          },
+        },
+      },
+    },
+    new Map(),
+    'icon-lead',
+  )
+  try {
+    const column = container.querySelector('.atb-column')
+    const marks = Array.from(column.querySelectorAll('.atb-step .atb-stepMark'))
+    assert.equal(marks.length, 3, 'every row carries a mark')
+    // The mark is drawn, so it does not depend on the platform's font.
+    for (const mark of marks) {
+      assert.equal(mark.tagName.toLowerCase(), 'svg', 'the mark is an inline icon')
+      assert.equal(mark.getAttribute('aria-hidden'), 'true', 'the mark is decoration')
+    }
+    const classes = marks.map((mark) => mark.getAttribute('class'))
+    assert.deepEqual(classes, [
+      'atb-stepMark atb-markPending',
+      'atb-stepMark atb-markProgress',
+      'atb-stepMark atb-markDone',
+    ])
+    // The icon carries no text, so the row's text stays the item's own words.
+    assert.deepEqual(
+      Array.from(column.querySelectorAll('.atb-step')).map((node) => node.textContent),
+      ['Not started yet', 'Being worked on', 'Already done'],
+    )
+  } finally {
+    await act(async () => { root.unmount() })
+  }
+})
+
+test('shows the same icon inside a shared task’s status pill', async () => {
+  const { container, root } = await mount()
+  try {
+    const pills = Array.from(container.querySelectorAll('.atb-pill'))
+    const withIcon = pills.filter((pill) => pill.querySelector('.atb-stepMark'))
+    assert.ok(withIcon.length > 0, 'a status pill carries its icon')
+    assert.ok(
+      withIcon.every((pill) => pill.querySelector('svg') !== null),
+      'the pill icon is drawn, not typed',
+    )
+  } finally {
+    await act(async () => { root.unmount() })
+  }
 })
